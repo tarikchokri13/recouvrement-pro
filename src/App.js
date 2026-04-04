@@ -77,10 +77,13 @@ function ScanModal({show,onClose,onDone}){
 
   const scan=async(file,prompt)=>{
     const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
-    const resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:file.type||"image/jpeg",data:b64}},{type:"text",text:prompt}]}]})});
+    const isLocal=window.location.hostname==="localhost";
+    const API_URL=isLocal?"http://localhost:3001/api/scan":"/api/scan";
+    const resp=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({image:b64,mediaType:file.type||"image/jpeg",prompt})});
     const data=await resp.json();
-    return JSON.parse((data.content?.map(i=>i.text||"").join("")||"").replace(/```json|```/g,"").trim());
+    if(!data.success)throw new Error(data.error||"Erreur serveur");
+    return JSON.parse((data.text||"").replace(/```json|```/g,"").trim());
   };
 
   const scanDoc=async(e)=>{
