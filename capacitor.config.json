@@ -1,0 +1,14 @@
+{
+  "appId": "com.recouvrement.pro",
+  "appName": "Recouvrement Pro",
+  "webDir": "build",
+  "server": {
+    "url": "http://VOTRE_IP:3001",
+    "cleartext": true,
+    "androidScheme": "http"
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#0C0F1A"
+  }
+}

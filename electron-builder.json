@@ -1,0 +1,30 @@
+{
+  "appId": "com.recouvrement-pro.app",
+  "productName": "Recouvrement Pro",
+  "directories": {
+    "output": "dist"
+  },
+  "files": [
+    "build/**/*",
+    "main.js",
+    "node_modules/**/*",
+    "!node_modules/**/test/**",
+    "!node_modules/**/docs/**"
+  ],
+  "extraResources": [
+    {
+      "from": "server.js",
+      "to": "server/server.js"
+    }
+  ],
+  "win": {
+    "target": "nsis"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": true,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "shortcutName": "Recouvrement Pro"
+  }
+}

@@ -1,0 +1,368 @@
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+
+var TYPES=["Chèque","LCN","Facture"];
+var STATUTS=["Nouveau","En cours","Relancé","Contentieux","Payé","Impayé définitif"];
+var PRIORITES=["Normale","Urgente","Critique"];
+var MOTIFS=["Provision insuffisante","Absence de provision","Compte clôturé","Opposition","Signature non conforme","Chèque prescrit","Endos irrégulier","Autre"];
+var ACTIONS=["Appel téléphonique","Visite terrain","Mise en demeure","Email","SMS","Courrier recommandé","Transmission avocat","Accord amiable"];
+var SCL={Nouveau:"#818CF8","En cours":"#FB923C",Relancé:"#FBBF24",Contentieux:"#F87171",Payé:"#34D399","Impayé définitif":"#9CA3AF"};
+var T={bg:"#0B0F19",card:"#111827",hov:"#1F2937",brd:"#1E293B",txt:"#F1F5F9",mut:"#94A3B8",dim:"#64748B",acc:"#C9A44E",ok:"#34D399",err:"#F87171",wrn:"#FBBF24",inf:"#818CF8",inp:"#0F172A",side:"#070B14"};
+var fM=function(v){return(!v&&v!==0)?"—":Number(v).toLocaleString("fr-MA",{style:"currency",currency:"MAD"})};
+var fD=function(d){return !d?"—":new Date(d).toLocaleDateString("fr-FR",{day:"2-digit",month:"short",year:"numeric"})};
+var fDT=function(d){return !d?"—":new Date(d).toLocaleDateString("fr-FR",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})};
+var dif=function(d){return d?Math.floor((new Date(d)-new Date())/864e5):null};
+var td=function(){return new Date().toISOString().slice(0,10)};
+
+// FIX: API URL adaptatif - fonctionne sur PC ET mobile
+var API=window.location.port==="3000"?"http://"+window.location.hostname+":3001":"";
+
+function apiCall(path,opts,token){
+  var h={"Content-Type":"application/json"};
+  if(token)h["Authorization"]="Bearer "+token;
+  return fetch(API+path,Object.assign({headers:h},opts||{})).then(function(r){
+    if(!r.ok)return r.json().then(function(d){throw new Error(d.error||"Erreur "+r.status)});
+    return r.json();
+  });
+}
+
+function CBar(props){
+  var data=props.data;var mx=props.maxVal||Math.max.apply(null,data.map(function(d){return d.value}).concat([1]));
+  return data.map(function(d,i){
+    return <div key={i} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+      <div style={{width:100,fontSize:11,color:T.mut,textAlign:"right",flexShrink:0}}>{d.label}</div>
+      <div style={{flex:1,height:24,background:T.bg,borderRadius:6,overflow:"hidden",position:"relative"}}>
+        <div style={{width:Math.max(d.value/mx*100,1)+"%",height:"100%",background:d.color||T.acc,borderRadius:6}}/>
+        <span style={{position:"absolute",right:8,top:3,fontSize:10,fontWeight:700,color:T.txt}}>{d.display||d.value}</span>
+      </div>
+    </div>;
+  });
+}
+function Badge(props){var c=SCL[props.s]||"#9CA3AF";return <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:20,background:c+"18",color:c,fontSize:11,fontWeight:600}}><span style={{width:6,height:6,borderRadius:"50%",background:c}}/>{props.s}</span>}
+function KPI(props){return <div style={{background:T.card,borderRadius:14,padding:"18px 22px",flex:"1 1 200px",minWidth:180,border:"1px solid "+T.brd,position:"relative",overflow:"hidden"}}><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><div style={{width:36,height:36,borderRadius:10,background:props.color+"15",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>{props.icon}</div><span style={{fontSize:10,color:T.dim,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{props.label}</span></div><div style={{fontSize:24,fontWeight:800,color:T.txt,fontFamily:"'Syne',sans-serif"}}>{props.value}</div></div>}
+function Modal(props){if(!props.show)return null;return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(6px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999,padding:16}} onClick={props.onClose}><div style={{background:T.card,borderRadius:18,border:"1px solid "+T.brd,padding:26,maxWidth:500,width:"100%",maxHeight:"85vh",overflowY:"auto"}} onClick={function(e){e.stopPropagation()}}>{props.title&&<div style={{fontSize:17,fontWeight:800,color:T.txt,marginBottom:16,fontFamily:"'Syne',sans-serif"}}>{props.title}</div>}{props.children}</div></div>}
+
+function ScanBox(props){
+  var show=props.show,onClose=props.onClose,onDone=props.onDone,token=props.token;
+  var _s=useState(1),step=_s[0],setStep=_s[1];
+  var _l=useState(false),busy=_l[0],setBusy=_l[1];
+  var _e=useState(null),err2=_e[0],setErr2=_e[1];
+  var _d1=useState(null),d1=_d1[0],setD1=_d1[1];
+  var _d2=useState(null),d2=_d2[0],setD2=_d2[1];
+  var f1=useRef(null),f2=useRef(null);
+  useEffect(function(){if(show){setStep(1);setD1(null);setD2(null);setErr2(null)}},[show]);
+  var doScan=function(file,prompt){return new Promise(function(resolve,reject){var reader=new FileReader();reader.onload=function(){var b64=reader.result.split(",")[1];fetch(API+"/api/scan",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},body:JSON.stringify({image:b64,mediaType:file.type||"image/jpeg",prompt:prompt})}).then(function(r){return r.json()}).then(function(data){if(!data.success){reject(new Error(data.error));return}resolve(JSON.parse((data.text||"").replace(/```json|```/g,"").trim()))}).catch(reject)};reader.onerror=reject;reader.readAsDataURL(file)})};
+  var scan1=function(ev){var file=ev.target.files&&ev.target.files[0];if(!file)return;setBusy(true);setErr2(null);
+    doScan(file,"Tu analyses un CHÈQUE ou LCN marocain impayé. RÈGLES IMPORTANTES: 1) Le DÉBITEUR est le TITULAIRE DU COMPTE = nom IMPRIMÉ SOUS le numéro de compte (PAS le bénéficiaire). 2) Le MONTANT est le nombre écrit en CHIFFRES (souvent en haut à droite ou dans un encadré, ex: 25000,00 ou 25.000,00). Convertis-le en nombre simple. 3) L'AGENCE BANCAIRE est souvent imprimée sur le chèque (ex: Agence Maarif, Agence Casa Centre). Extrais en JSON strict sans markdown ni backticks: {\"type\":\"Chèque ou LCN\",\"nomDebiteur\":\"titulaire du compte\",\"numCompte\":\"RIB ou numéro de compte complet\",\"numDocument\":\"numéro du chèque ou LCN\",\"banque\":\"nom de la banque\",\"agenceBancaire\":\"nom de l agence bancaire\",\"montant\":nombre_sans_devise_ni_espace,\"dateEcheance\":\"YYYY-MM-DD\",\"ville\":\"ville\",\"notes\":\"\"} IMPORTANT: montant doit être un NOMBRE (ex: 25000.00 pas une chaine). Chaines vides si non visible. JSON UNIQUEMENT.")
+    .then(function(r){setD1(r);setStep(2)}).catch(function(e){setErr2("Échec: "+(e.message||"photo plus nette SVP"))}).finally(function(){setBusy(false);if(f1.current)f1.current.value=""})};
+  var scan2=function(ev){var file=ev.target.files&&ev.target.files[0];if(!file)return;setBusy(true);setErr2(null);
+    doScan(file,"Tu analyses un CERTIFICAT DE REFUS DE PAIEMENT marocain émis par une banque. Extrais en JSON strict sans markdown: {\"cinDebiteur\":\"numéro CIN\",\"rcDebiteur\":\"numéro RC si société\",\"adresseDebiteur\":\"adresse complète\",\"motifRejet\":\"motif exact du refus de paiement\",\"ville\":\"ville\",\"observations\":\"autres infos\"} Chaines vides si non visibles. JSON UNIQUEMENT.")
+    .then(function(r){setD2(r);setStep(3)}).catch(function(e){setErr2("Échec: "+(e.message||"réessayez"))}).finally(function(){setBusy(false);if(f2.current)f2.current.value=""})};
+  var doConfirm=function(){
+    var result={};
+    result.type=(d1&&d1.type)||"Chèque";
+    result.nom_debiteur=(d1&&d1.nomDebiteur)||"";
+    result.num_compte=(d1&&d1.numCompte)||"";
+    result.num_document=(d1&&d1.numDocument)||"";
+    result.banque=(d1&&d1.banque)||"";
+    result.agence_bancaire=(d1&&d1.agenceBancaire)||"";
+    result.montant=(d1&&d1.montant&&d1.montant!==0)?Number(d1.montant):0;
+    result.date_echeance=(d1&&d1.dateEcheance)||"";
+    result.ville=(d1&&d1.ville)||(d2&&d2.ville)||"";
+    result.cin_debiteur=(d2&&d2.cinDebiteur)||"";
+    result.rc_debiteur=(d2&&d2.rcDebiteur)||"";
+    result.adresse_debiteur=(d2&&d2.adresseDebiteur)||"";
+    result.motif_rejet=(d2&&d2.motifRejet)||"";
+    result.notes=[(d1&&d1.notes),(d2&&d2.observations)].filter(Boolean).join(" | ");
+    result.date_reception=td();
+    result.statut="Nouveau";
+    result.priorite="Normale";
+    onDone(result);
+  };
+  var FR=function(lb,v){if(!v||v==="0"||v===0)return null;return <div style={{display:"flex",justifyContent:"space-between",padding:"5px 10px",background:T.bg,borderRadius:6,marginBottom:3,fontSize:12}}><span style={{color:T.dim}}>{lb}</span><span style={{fontWeight:600,color:T.txt}}>{typeof v==="number"?fM(v):v}</span></div>};
+  return <Modal show={show} onClose={function(){if(!busy)onClose()}} title="Scanner un document">
+    <div style={{display:"flex",gap:4,marginBottom:16}}>{["Chèque/LCN","Certificat","Validation"].map(function(lb,i){return <div key={i} style={{flex:1,textAlign:"center"}}><div style={{height:3,borderRadius:2,background:i+1<=step?T.acc:T.brd,marginBottom:3}}/><span style={{fontSize:9,color:i+1<=step?T.acc:T.dim,fontWeight:700}}>{lb}</span></div>})}</div>
+    {busy&&<div style={{textAlign:"center",padding:36}}><div style={{width:40,height:40,border:"3px solid "+T.brd,borderTopColor:T.acc,borderRadius:"50%",animation:"spin .8s linear infinite",margin:"0 auto 14px"}}/><div style={{fontWeight:700,color:T.txt}}>Analyse IA…</div></div>}
+    {err2&&!busy&&<div style={{textAlign:"center",padding:16}}><div style={{color:T.err,fontWeight:600,marginBottom:10}}>{err2}</div><button onClick={function(){setErr2(null)}} style={{padding:"8px 18px",borderRadius:8,border:"none",background:T.hov,color:T.txt,cursor:"pointer",fontFamily:"'Manrope',sans-serif",fontWeight:600}}>Réessayer</button></div>}
+    {!busy&&!err2&&step===1&&<div style={{textAlign:"center"}}><div onClick={function(){f1.current&&f1.current.click()}} style={{padding:28,border:"2px dashed "+T.acc+"60",borderRadius:14,background:T.acc+"10",cursor:"pointer"}}><div style={{fontSize:36,marginBottom:6}}>📷</div><div style={{fontWeight:700,color:T.acc}}>Scanner le chèque ou LCN</div></div><input ref={f1} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={scan1}/></div>}
+    {!busy&&!err2&&step===2&&<div><div style={{padding:8,background:T.ok+"15",borderRadius:8,marginBottom:12,fontSize:12,color:T.ok}}>✓ Chèque scanné — {d1&&d1.nomDebiteur} {d1&&d1.montant?" — "+fM(d1.montant):""}</div><div onClick={function(){f2.current&&f2.current.click()}} style={{padding:24,border:"2px dashed "+T.inf+"40",borderRadius:14,background:T.inf+"08",textAlign:"center",cursor:"pointer"}}><div style={{fontSize:32,marginBottom:4}}>📄</div><div style={{fontWeight:700,color:T.inf}}>Scanner le certificat</div></div><input ref={f2} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={scan2}/><button onClick={function(){setStep(3)}} style={{width:"100%",marginTop:8,padding:"8px",borderRadius:8,border:"1px solid "+T.brd,background:T.hov,color:T.dim,cursor:"pointer",fontFamily:"'Manrope',sans-serif"}}>Passer →</button></div>}
+    {!busy&&!err2&&step===3&&<div>{d1&&FR("Débiteur",d1.nomDebiteur)}{d1&&FR("N° Compte",d1.numCompte)}{d1&&FR("N° Doc",d1.numDocument)}{d1&&FR("Montant",d1.montant)}{d1&&FR("Banque",d1.banque)}{d1&&FR("Échéance",d1.dateEcheance)}{d1&&FR("Ville",d1.ville)}{d2&&FR("CIN",d2.cinDebiteur)}{d2&&FR("RC",d2.rcDebiteur)}{d2&&FR("Adresse",d2.adresseDebiteur)}{d2&&FR("Motif",d2.motifRejet)}{d2&&FR("Ville cert.",d2.ville)}<div style={{padding:8,background:T.acc+"12",borderRadius:8,fontSize:11,color:T.acc,marginTop:6}}>Client mandant = saisie manuelle</div><div style={{display:"flex",gap:8,marginTop:14}}><button onClick={onClose} style={{flex:1,padding:"9px",borderRadius:8,border:"none",background:T.hov,color:T.txt,cursor:"pointer",fontFamily:"'Manrope',sans-serif",fontWeight:600}}>Annuler</button><button onClick={doConfirm} style={{flex:1,padding:"9px",borderRadius:8,border:"none",background:T.acc,color:T.bg,cursor:"pointer",fontFamily:"'Manrope',sans-serif",fontWeight:700}}>Importer</button></div></div>}
+  </Modal>;
+}
+
+var bs={padding:"9px 20px",borderRadius:10,border:"none",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"'Manrope',sans-serif",color:T.txt,background:T.acc};
+var iS={width:"100%",padding:"9px 13px",borderRadius:10,border:"1.5px solid "+T.brd,fontSize:13,outline:"none",fontFamily:"'Manrope',sans-serif",background:T.inp,color:T.txt,boxSizing:"border-box"};
+
+export default function App(){
+  var _u=useState(null),user=_u[0],setUser=_u[1];
+  var _t=useState(""),token=_t[0],setToken=_t[1];
+  var _us=useState([]),users=_us[0],setUsers=_us[1];
+  var _r=useState([]),recs=_r[0],setRecs=_r[1];
+  var _a=useState([]),acts=_a[0],setActs=_a[1];
+  var _v=useState("dashboard"),view=_v[0],setView=_v[1];
+  var _er=useState(null),eRec=_er[0],setERec=_er[1];
+  var _eu=useState(null),eUsr=_eu[0],setEUsr=_eu[1];
+  var _d=useState(null),det=_d[0],setDet=_d[1];
+  var _s=useState(""),search=_s[0],setSearch=_s[1];
+  var _gs=useState(""),gs=_gs[0],setGs=_gs[1];var _sgs=useState(false),showGs=_sgs[0],setShowGs=_sgs[1];
+  var _ft=useState("Tous"),fT=_ft[0],setFT=_ft[1];var _fs=useState("Tous"),fS=_fs[0],setFS=_fs[1];
+  var _fa=useState("Tous"),fA=_fa[0],setFA=_fa[1];var _fp=useState("Tous"),fP=_fp[0],setFP=_fp[1];
+  var _lf=useState({u:"",p:""}),lf=_lf[0],setLf=_lf[1];var _le=useState(""),le=_le[0],setLe=_le[1];
+  var _n=useState(null),notif=_n[0],setNotif=_n[1];
+  var _sc=useState(false),showScan=_sc[0],setShowScan=_sc[1];
+  var _sr=useState(false),showRel=_sr[0],setShowRel=_sr[1];var _rt=useState(null),relT=_rt[0],setRelT=_rt[1];
+  var _rf=useState({action:"",details:""}),rf=_rf[0],setRf=_rf[1];
+  var _ai=useState(null),aiResult=_ai[0],setAiResult=_ai[1];var _ail=useState(false),aiLoading=_ail[0],setAiLoading=_ail[1];
+  var _sb=useState(true),sb=_sb[0],setSb=_sb[1];var _cv=useState(null),cView=_cv[0],setCView=_cv[1];
+
+  var noti=function(m,tp){setNotif({m:m,t:tp||"s"});setTimeout(function(){setNotif(null)},3500)};
+  var errH=function(e){noti(e.message||"Erreur","w");console.error(e)};
+
+  var reload=useCallback(function(tk){
+    apiCall("/api/records",null,tk).then(setRecs).catch(errH);
+    apiCall("/api/users",null,tk).then(setUsers).catch(errH);
+    apiCall("/api/activities",null,tk).then(setActs).catch(errH);
+  },[]);
+
+  var login=function(){
+    apiCall("/api/login",{method:"POST",body:JSON.stringify({username:lf.u,password:lf.p})}).then(function(d){setToken(d.token);setUser(d.user);setLe("");setLf({u:"",p:""});reload(d.token)}).catch(function(e){setLe(e.message)});
+  };
+  var logout=function(){setUser(null);setToken("");setRecs([]);setActs([]);setUsers([]);setView("dashboard");setDet(null)};
+  var role=user?user.role:"";var isMgr=role==="manager";var isCli=role==="client";
+
+  // FIX: saveRec envoie directement en snake_case (le format de la DB)
+  var saveRec=function(r){
+    var body=Object.assign({},r);
+    // S'assurer que montant est un nombre
+    body.montant=Number(body.montant)||0;
+    var method=r.id?"PUT":"POST";
+    var url=r.id?"/api/records/"+r.id:"/api/records";
+    apiCall(url,{method:method,body:JSON.stringify(body)},token).then(function(){noti(r.id?"Mis à jour":"Dossier créé");setERec(null);setView("dossiers");reload(token)}).catch(errH);
+  };
+
+  var delRec=function(id){if(!window.confirm("Supprimer ce dossier ?"))return;apiCall("/api/records/"+id,{method:"DELETE"},token).then(function(){noti("Supprimé");setDet(null);reload(token)}).catch(errH)};
+  var chgStat=function(id,ns){apiCall("/api/records/"+id+"/statut",{method:"PATCH",body:JSON.stringify({statut:ns})},token).then(function(){noti("→ "+ns);reload(token)}).catch(errH)};
+  var doAssign=function(rid,aid){apiCall("/api/records/"+rid+"/assign",{method:"PATCH",body:JSON.stringify({agent_id:aid})},token).then(function(){noti("Assigné");reload(token)}).catch(errH)};
+  var doRel=function(){if(!relT||!rf.action)return;apiCall("/api/relances",{method:"POST",body:JSON.stringify({record_id:relT.id,action:rf.action,details:rf.details})},token).then(function(){noti("Relance OK");setShowRel(false);setRf({action:"",details:""});reload(token)}).catch(errH)};
+  var saveUsr=function(u){var method=u.id?"PUT":"POST";var url=u.id?"/api/users/"+u.id:"/api/users";apiCall(url,{method:method,body:JSON.stringify(u)},token).then(function(){noti("OK");setEUsr(null);reload(token)}).catch(errH)};
+  // FIX: CSV export avec token dans l'URL
+  var exportCSV=function(){window.open(API+"/api/export/csv?token="+token)};
+  var doBackup=function(){apiCall("/api/backup",{method:"POST"},token).then(function(){noti("Sauvegarde OK")}).catch(errH)};
+  var doAiAnalysis=function(id){setAiLoading(true);setAiResult(null);apiCall("/api/ai/analyze/"+id,null,token).then(function(d){setAiResult(d.analysis);setAiLoading(false)}).catch(function(e){errH(e);setAiLoading(false)})};
+
+  // FIX: Scan importe en snake_case directement → pas de conversion nécessaire
+  var handleScanDone=function(r){setERec(r);setView("form");setShowScan(false)};
+
+  var filtered=useMemo(function(){var base=cView?recs.filter(function(r){return r.nom_client===cView}):recs;return base.filter(function(r){if(search&&![r.nom_debiteur,r.num_document,r.nom_client,r.id,r.banque,r.cin_debiteur,r.num_compte].some(function(f){return(f||"").toLowerCase().indexOf(search.toLowerCase())>=0}))return false;if(fT!=="Tous"&&r.type!==fT)return false;if(fS!=="Tous"&&r.statut!==fS)return false;if(fP!=="Tous"&&r.priorite!==fP)return false;if(fA!=="Tous"&&r.assigned_to!==fA)return false;return true})},[recs,cView,search,fT,fS,fA,fP]);
+  var mt=useMemo(function(){return recs.reduce(function(s,r){return s+(Number(r.montant)||0)},0)},[recs]);
+  var mr=useMemo(function(){return recs.filter(function(r){return r.statut==="Payé"}).reduce(function(s,r){return s+(Number(r.montant)||0)},0)},[recs]);
+  var alerts=useMemo(function(){var a=recs.filter(function(r){return r.statut!=="Payé"&&r.statut!=="Impayé définitif"});return{ov:a.filter(function(r){var d=dif(r.date_echeance);return d!==null&&d<0}),up:a.filter(function(r){var d=dif(r.date_echeance);return d!==null&&d>=0&&d<=7}),ua:a.filter(function(r){return!r.assigned_to}),cr:a.filter(function(r){return r.priorite==="Critique"})}},[recs]);
+  var alC=alerts.ov.length+alerts.up.length+alerts.ua.length+alerts.cr.length;
+  var statData=useMemo(function(){return STATUTS.map(function(s){return{label:s,value:recs.filter(function(r){return r.statut===s}).length,color:SCL[s]}}).filter(function(d){return d.value>0})},[recs]);
+  var uniqueClients=useMemo(function(){var m={};recs.forEach(function(r){if(r.nom_client){if(!m[r.nom_client])m[r.nom_client]={nom:r.nom_client,cnt:0,mt2:0,mp:0};m[r.nom_client].cnt++;m[r.nom_client].mt2+=(Number(r.montant)||0);if(r.statut==="Payé")m[r.nom_client].mp+=(Number(r.montant)||0)}});return Object.values(m)},[recs]);
+  var agentUsers=useMemo(function(){return users.filter(function(u){return u.role==="agent"})},[users]);
+  var gsRes=useMemo(function(){if(!gs||gs.length<2)return null;var q=gs.toLowerCase();return{d:recs.filter(function(r){return[r.id,r.num_document,r.num_compte,r.nom_debiteur,r.nom_client].some(function(f){return(f||"").toLowerCase().indexOf(q)>=0})}).slice(0,6)}},[gs,recs]);
+  var detRec=det?recs.find(function(x){return x.id===det.id})||det:null;
+  var detAgent=detRec?users.find(function(u){return u.id===detRec.assigned_to}):null;
+  var detActs=useMemo(function(){return detRec?acts.filter(function(a){return a.record_id===detRec.id}):[]},[detRec,acts]);
+  var mgrUser=useMemo(function(){return users.find(function(u){return u.role==="manager"})},[users]);
+
+  if(!user)return(
+    <div style={{minHeight:"100vh",display:"flex",fontFamily:"'Manrope',sans-serif",background:T.bg}}>
+      <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+      <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{maxWidth:360,width:"100%"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:30}}><div style={{width:46,height:46,borderRadius:12,background:"linear-gradient(135deg,"+T.acc+",#A07830)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:T.bg,fontFamily:"'Syne',sans-serif"}}>R</div><div><div style={{fontSize:18,fontWeight:800,color:T.txt,fontFamily:"'Syne',sans-serif"}}>Recouvrement Pro</div><div style={{fontSize:9,color:T.dim,letterSpacing:2,textTransform:"uppercase"}}>Gestion des créances</div></div></div>
+          <h2 style={{fontSize:26,fontWeight:800,color:T.txt,margin:"0 0 6px",fontFamily:"'Syne',sans-serif"}}>Connexion</h2>
+          <p style={{color:T.dim,fontSize:13,margin:"0 0 24px"}}>Entrez vos identifiants</p>
+          <div style={{marginBottom:16}}><label style={{fontSize:10,fontWeight:700,color:T.mut,display:"block",marginBottom:5}}>IDENTIFIANT</label><input value={lf.u} onChange={function(e){setLf({u:e.target.value,p:lf.p})}} onKeyDown={function(e){if(e.key==="Enter")login()}} style={iS}/></div>
+          <div style={{marginBottom:22}}><label style={{fontSize:10,fontWeight:700,color:T.mut,display:"block",marginBottom:5}}>MOT DE PASSE</label><input type="password" value={lf.p} onChange={function(e){setLf({u:lf.u,p:e.target.value})}} onKeyDown={function(e){if(e.key==="Enter")login()}} style={iS}/></div>
+          {le&&<div style={{color:T.err,fontSize:12,marginBottom:12,padding:"7px 10px",background:T.err+"12",borderRadius:8}}>{le}</div>}
+          <button onClick={login} style={{...bs,width:"100%",padding:13,fontSize:14,background:"linear-gradient(135deg,"+T.acc+",#A07830)",color:T.bg,borderRadius:12}}>Se connecter</button>
+          <div style={{marginTop:24,padding:12,background:T.bg,borderRadius:10,border:"1px solid "+T.brd,fontSize:10,color:T.dim}}>Premier accès : admin / admin</div>
+        </div>
+      </div>
+      <div style={{flex:1,background:"linear-gradient(135deg,"+T.acc+"12,"+T.bg+")",display:"flex",alignItems:"center",justifyContent:"center",borderLeft:"1px solid "+T.brd}}><div style={{textAlign:"center",padding:40}}><div style={{fontSize:56,marginBottom:16,opacity:.7}}>⚖️</div><div style={{fontSize:28,fontWeight:800,color:T.txt,fontFamily:"'Syne',sans-serif"}}>Recouvrement Pro</div><div style={{fontSize:13,color:T.dim,maxWidth:280,margin:"8px auto",lineHeight:1.7}}>Solution professionnelle de recouvrement des créances impayées</div></div></div>
+    </div>
+  );
+
+  var nav=[{id:"dashboard",ic:"◉",lb:"Tableau de bord"},{id:"dossiers",ic:"☰",lb:isCli?"Mes dossiers":"Dossiers"}];
+  if(!isCli){nav.push({id:"scan",ic:"◎",lb:"Scanner"});nav.push({id:"nouveau",ic:"＋",lb:"Nouveau"})}
+  if(isMgr){nav.push({id:"clients",ic:"◆",lb:"Clients"});nav.push({id:"agents",ic:"◇",lb:"Équipe"})}
+  nav.push({id:"history",ic:"▤",lb:"Historique"});
+
+  return(
+    <div style={{display:"flex",minHeight:"100vh",fontFamily:"'Manrope',sans-serif",background:T.bg,color:T.txt}}>
+      <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+      {notif&&<div style={{position:"fixed",top:14,right:14,zIndex:9999,padding:"10px 22px",borderRadius:10,background:notif.t==="s"?T.ok:T.wrn,color:T.bg,fontWeight:700,fontSize:13}}>{notif.m}</div>}
+
+      <aside style={{width:sb?230:58,background:T.side,borderRight:"1px solid "+T.brd,transition:"width .2s",flexShrink:0,display:"flex",flexDirection:"column",position:"sticky",top:0,height:"100vh",overflow:"hidden",zIndex:100}}>
+        <div style={{padding:sb?"16px 18px":"16px 12px",borderBottom:"1px solid "+T.brd,display:"flex",alignItems:"center",gap:10}}><div style={{width:34,height:34,minWidth:34,borderRadius:10,background:"linear-gradient(135deg,"+T.acc+",#A07830)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:800,color:T.bg,cursor:"pointer",fontFamily:"'Syne',sans-serif"}} onClick={function(){setSb(!sb)}}>R</div>{sb&&<div><div style={{fontWeight:800,fontSize:13,fontFamily:"'Syne',sans-serif"}}>Recouvrement</div><div style={{fontSize:8,color:T.dim,letterSpacing:2}}>PRO</div></div>}</div>
+        {sb&&<div style={{padding:"12px 18px",borderBottom:"1px solid "+T.brd}}><div style={{fontSize:12,fontWeight:700,color:T.acc}}>{user.nom}</div><div style={{fontSize:10,color:T.dim,marginTop:2}}>{role==="manager"?"Manager":role==="agent"?"Agent":"Client"}</div></div>}
+        <nav style={{flex:1,padding:"8px 6px",overflowY:"auto"}}>{nav.map(function(it){var act=view===it.id||(it.id==="nouveau"&&view==="form");return <button key={it.id} onClick={function(){if(it.id==="nouveau"){setERec({type:"Chèque",nom_debiteur:"",cin_debiteur:"",rc_debiteur:"",adresse_debiteur:"",tel_debiteur:"",email_debiteur:"",nom_client:"",ref_client:"",client_user_id:"",num_document:"",num_compte:"",banque:"",agence_bancaire:"",montant:"",date_echeance:"",date_reception:"",statut:"Nouveau",priorite:"Normale",motif_rejet:"",notes:"",ville:"",assigned_to:""});setView("form")}else if(it.id==="scan")setShowScan(true);else{setView(it.id);setDet(null);setERec(null);setEUsr(null);setCView(null)}}} style={{display:"flex",alignItems:"center",gap:9,width:"100%",padding:sb?"9px 14px":"9px 0",borderRadius:10,background:act?T.acc+"18":"transparent",color:act?T.acc:T.dim,border:act?"1px solid "+T.acc+"30":"1px solid transparent",cursor:"pointer",fontFamily:"'Manrope',sans-serif",fontSize:12,fontWeight:act?700:500,textAlign:"left",justifyContent:sb?"flex-start":"center",marginBottom:2}}><span style={{fontSize:14,minWidth:18,textAlign:"center"}}>{it.ic}</span>{sb&&<span>{it.lb}</span>}{sb&&it.id==="dashboard"&&alC>0&&<span style={{marginLeft:"auto",background:T.err,color:"#fff",padding:"0 6px",borderRadius:8,fontSize:9,fontWeight:800}}>{alC}</span>}</button>})}</nav>
+        {sb&&isMgr&&<button onClick={doBackup} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",background:"transparent",color:T.dim,border:"none",borderTop:"1px solid "+T.brd,cursor:"pointer",fontFamily:"'Manrope',sans-serif",fontSize:11,width:"100%"}}>💾 Sauvegarder</button>}
+        <button onClick={logout} style={{display:"flex",alignItems:"center",gap:8,padding:"12px 18px",background:"transparent",color:T.dim,border:"none",borderTop:"1px solid "+T.brd,cursor:"pointer",fontFamily:"'Manrope',sans-serif",fontSize:11,width:"100%",justifyContent:sb?"flex-start":"center"}}>⏻{sb&&<span style={{marginLeft:4}}>Déconnexion</span>}</button>
+      </aside>
+
+      <main style={{flex:1,padding:"22px 28px",maxWidth:1200,overflow:"auto"}}>
+        <div style={{position:"relative",marginBottom:22}}><input value={gs} onChange={function(e){setGs(e.target.value);setShowGs(true)}} onFocus={function(){setShowGs(true)}} placeholder="🔍  Recherche rapide…" style={{...iS,padding:"11px 16px",fontSize:14,borderRadius:14,background:T.card}}/>
+          {showGs&&gsRes&&<div style={{position:"absolute",top:"100%",left:0,right:0,background:T.card,borderRadius:12,border:"1px solid "+T.brd,boxShadow:"0 12px 40px rgba(0,0,0,.4)",zIndex:50,marginTop:4,overflow:"hidden"}}>{gsRes.d.length===0?<div style={{padding:16,textAlign:"center",color:T.dim,fontSize:12}}>Aucun résultat</div>:gsRes.d.map(function(r){return <div key={r.id} onClick={function(){setDet(r);setView("dossiers");setShowGs(false);setGs("")}} style={{padding:"9px 14px",cursor:"pointer",fontSize:12,display:"flex",justifyContent:"space-between",borderBottom:"1px solid "+T.brd+"50"}} onMouseEnter={function(e){e.currentTarget.style.background=T.hov}} onMouseLeave={function(e){e.currentTarget.style.background=""}}><span><b style={{color:T.acc}}>{r.num_document||r.id}</b> — {r.nom_debiteur} — {r.nom_client}</span><span style={{fontFamily:"'JetBrains Mono',monospace",color:T.ok,fontWeight:600}}>{fM(r.montant)}</span></div>})}</div>}
+          {showGs&&<div style={{position:"fixed",inset:0,zIndex:40}} onClick={function(){setShowGs(false)}}/>}
+        </div>
+
+        {view==="dashboard"&&<div>
+          <h1 style={{fontSize:24,fontWeight:800,margin:"0 0 4px",fontFamily:"'Syne',sans-serif"}}>Tableau de bord</h1>
+          <p style={{color:T.dim,margin:"0 0 20px",fontSize:12}}>{isMgr?"Vue d'ensemble":isCli?"Suivi":"Vos dossiers"}</p>
+          <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:24}}>
+            <KPI icon="📁" label="Dossiers" value={recs.length} color={T.inf}/>
+            <KPI icon="💰" label="Montant" value={fM(mt)} color={T.acc}/>
+            <KPI icon="✓" label="Recouvré" value={fM(mr)} color={T.ok}/>
+            <KPI icon="📈" label="Taux" value={Math.round(mt>0?mr/mt*100:0)+"%"} color="#A78BFA"/>
+          </div>
+          {recs.length>0&&<div style={{background:T.card,borderRadius:14,border:"1px solid "+T.brd,padding:18,marginBottom:24}}><div style={{fontSize:13,fontWeight:700,marginBottom:12,fontFamily:"'Syne',sans-serif"}}>Par statut</div><CBar data={statData}/></div>}
+          {!isCli&&<div style={{marginBottom:20}}><div style={{fontSize:14,fontWeight:700,marginBottom:10}}>Alertes {alC>0&&<span style={{background:T.err,color:"#fff",padding:"1px 8px",borderRadius:8,fontSize:10}}>{alC}</span>}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:8}}>{[{t:"Échéances dépassées",c:alerts.ov.length,cl:T.err,ic:"⏰"},{t:"< 7 jours",c:alerts.up.length,cl:T.wrn,ic:"⚡"},{t:"Non assignés",c:alerts.ua.length,cl:T.inf,ic:"👤"},{t:"Critique",c:alerts.cr.length,cl:T.err,ic:"🔥"}].map(function(a,i){return <div key={i} style={{background:T.card,borderRadius:10,border:"1px solid "+T.brd,padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:8}}><span>{a.ic}</span><span style={{fontSize:12,color:T.mut}}>{a.t}</span></div><span style={{fontSize:18,fontWeight:800,color:a.c>0?a.cl:T.dim,fontFamily:"'Syne',sans-serif"}}>{a.c}</span></div>})}</div>
+          </div>}
+          {!isCli&&<div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button onClick={function(){setERec({type:"Chèque",nom_debiteur:"",cin_debiteur:"",rc_debiteur:"",adresse_debiteur:"",tel_debiteur:"",email_debiteur:"",nom_client:"",ref_client:"",client_user_id:"",num_document:"",num_compte:"",banque:"",agence_bancaire:"",montant:"",date_echeance:"",date_reception:"",statut:"Nouveau",priorite:"Normale",motif_rejet:"",notes:"",ville:"",assigned_to:""});setView("form")}} style={{...bs,background:T.card,border:"1px solid "+T.brd,padding:"12px 20px",borderRadius:12}}>✏️ Saisie</button><button onClick={function(){setShowScan(true)}} style={{...bs,padding:"12px 20px",borderRadius:12,background:"linear-gradient(135deg,"+T.acc+",#A07830)",color:T.bg}}>📷 Scanner</button><button onClick={exportCSV} style={{...bs,background:T.card,border:"1px solid "+T.brd,padding:"12px 20px",borderRadius:12}}>⬇ CSV</button></div>}
+        </div>}
+
+        {view==="dossiers"&&!det&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+            <div><h1 style={{fontSize:22,fontWeight:800,margin:0,fontFamily:"'Syne',sans-serif"}}>{cView||"Dossiers"}</h1>{cView&&<button onClick={function(){setCView(null)}} style={{fontSize:11,color:T.acc,background:"none",border:"none",cursor:"pointer"}}>← Tous</button>}</div>
+            {!isCli&&<div style={{display:"flex",gap:6}}><button onClick={function(){setShowScan(true)}} style={{...bs,background:T.card,border:"1px solid "+T.brd,padding:"6px 12px",fontSize:11}}>📷</button><button onClick={exportCSV} style={{...bs,background:T.card,border:"1px solid "+T.brd,padding:"6px 12px",fontSize:11}}>⬇</button><button onClick={function(){setERec({type:"Chèque",nom_debiteur:"",cin_debiteur:"",rc_debiteur:"",adresse_debiteur:"",tel_debiteur:"",email_debiteur:"",nom_client:cView||"",ref_client:"",client_user_id:"",num_document:"",num_compte:"",banque:"",agence_bancaire:"",montant:"",date_echeance:"",date_reception:"",statut:"Nouveau",priorite:"Normale",motif_rejet:"",notes:"",ville:"",assigned_to:""});setView("form")}} style={{...bs,padding:"6px 12px",fontSize:11}}>＋</button></div>}
+          </div>
+          <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+            <input placeholder="Filtrer…" value={search} onChange={function(e){setSearch(e.target.value)}} style={{...iS,maxWidth:180,background:T.card}}/>
+            <select value={fT} onChange={function(e){setFT(e.target.value)}} style={{...iS,maxWidth:100,background:T.card}}><option>Tous</option>{TYPES.map(function(t){return <option key={t}>{t}</option>})}</select>
+            <select value={fS} onChange={function(e){setFS(e.target.value)}} style={{...iS,maxWidth:130,background:T.card}}><option>Tous</option>{STATUTS.map(function(s){return <option key={s}>{s}</option>})}</select>
+            <select value={fP} onChange={function(e){setFP(e.target.value)}} style={{...iS,maxWidth:110,background:T.card}}><option>Tous</option>{PRIORITES.map(function(p){return <option key={p}>{p}</option>})}</select>
+            {isMgr&&<select value={fA} onChange={function(e){setFA(e.target.value)}} style={{...iS,maxWidth:140,background:T.card}}><option value="Tous">Tous agents</option>{agentUsers.map(function(u){return <option key={u.id} value={u.id}>{u.nom}</option>})}</select>}
+          </div>
+          {filtered.length===0?<div style={{textAlign:"center",padding:40,color:T.dim}}>Aucun dossier</div>:
+          <div style={{background:T.card,borderRadius:14,border:"1px solid "+T.brd,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr>{["Type","Débiteur","Montant","Échéance","Statut"].concat(isMgr?["Client"]:[]).map(function(h){return <th key={h} style={{padding:"10px 12px",textAlign:"left",fontWeight:700,color:T.dim,fontSize:10,borderBottom:"1px solid "+T.brd}}>{h}</th>})}</tr></thead>
+            <tbody>{filtered.map(function(r){var ov=dif(r.date_echeance)<0&&r.statut!=="Payé"&&r.statut!=="Impayé définitif";return <tr key={r.id} onClick={function(){setDet(r)}} style={{cursor:"pointer"}} onMouseEnter={function(e){e.currentTarget.style.background=T.hov}} onMouseLeave={function(e){e.currentTarget.style.background=""}}>
+              <td style={{padding:"10px 12px",fontWeight:600}}>{r.type}</td>
+              <td style={{padding:"10px 12px"}}><div style={{fontWeight:600}}>{r.nom_debiteur||"—"}</div><div style={{fontSize:10,color:T.dim,fontFamily:"'JetBrains Mono',monospace"}}>{r.num_document}</div></td>
+              <td style={{padding:"10px 12px",fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:T.ok}}>{fM(r.montant)}</td>
+              <td style={{padding:"10px 12px",color:ov?T.err:T.mut,fontWeight:ov?700:400}}>{fD(r.date_echeance)}{ov?" ⚠":""}</td>
+              <td style={{padding:"10px 12px"}}><Badge s={r.statut}/></td>
+              {isMgr&&<td style={{padding:"10px 12px",fontSize:11,color:T.mut}}>{r.nom_client||"—"}</td>}
+            </tr>})}</tbody>
+          </table></div></div>}
+        </div>}
+
+        {view==="dossiers"&&det&&detRec&&<div>
+          <button onClick={function(){setDet(null)}} style={{...bs,background:T.hov,marginBottom:14,padding:"6px 12px",fontSize:12}}>← Retour</button>
+          <div style={{background:T.card,borderRadius:14,border:"1px solid "+T.brd,padding:24}}>
+            <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:12,marginBottom:20}}>
+              <div><div style={{fontSize:10,color:T.dim,fontFamily:"'JetBrains Mono',monospace"}}>{detRec.id}</div><h2 style={{margin:"4px 0 8px",fontSize:20,fontWeight:800,fontFamily:"'Syne',sans-serif"}}>{detRec.nom_debiteur||"Sans nom"}</h2><div style={{display:"flex",gap:5,flexWrap:"wrap"}}><Badge s={detRec.statut}/></div></div>
+              {!isCli&&<div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                <select value={detRec.statut} onChange={function(e){chgStat(detRec.id,e.target.value)}} style={{...iS,maxWidth:140,fontSize:11}}>{STATUTS.map(function(s){return <option key={s}>{s}</option>})}</select>
+                {isMgr&&<select value={detRec.assigned_to||""} onChange={function(e){doAssign(detRec.id,e.target.value)}} style={{...iS,maxWidth:140,fontSize:11}}><option value="">Non assigné</option>{agentUsers.map(function(u){return <option key={u.id} value={u.id}>{u.nom}</option>})}</select>}
+                <button onClick={function(){setRelT(detRec);setShowRel(true)}} style={{...bs,padding:"7px 12px",fontSize:11}}>📞</button>
+                <button onClick={function(){setERec(Object.assign({},detRec));setView("form")}} style={{...bs,background:T.hov,padding:"7px 12px",fontSize:11}}>✎</button>
+                {isMgr&&<button onClick={function(){delRec(detRec.id)}} style={{...bs,background:T.err+"18",color:T.err,padding:"7px 12px",fontSize:11}}>🗑</button>}
+              </div>}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:12,marginBottom:16}}>
+              {[{l:"Montant",v:fM(detRec.montant),m:1},{l:"N° Compte",v:detRec.num_compte,m:1},{l:"N° Document",v:detRec.num_document,m:1},{l:"Banque",v:detRec.banque},{l:"Agence",v:detRec.agence_bancaire},{l:"Échéance",v:fD(detRec.date_echeance)},{l:"Réception",v:fD(detRec.date_reception)},{l:"CIN",v:detRec.cin_debiteur},{l:"RC",v:detRec.rc_debiteur},{l:"Téléphone",v:detRec.tel_debiteur},{l:"Adresse",v:detRec.adresse_debiteur},{l:"Ville",v:detRec.ville},{l:"Client",v:detRec.nom_client},{l:"Réf",v:detRec.ref_client},{l:"Agent",v:detAgent?detAgent.nom:"—"},{l:"Priorité",v:detRec.priorite}].map(function(f,i){return <div key={i} style={{padding:10,background:T.bg,borderRadius:8}}><div style={{fontSize:9,color:T.dim,fontWeight:700,letterSpacing:.7,marginBottom:2}}>{f.l}</div><div style={{fontSize:12,fontWeight:600,fontFamily:f.m?"'JetBrains Mono',monospace":"inherit"}}>{f.v||"—"}</div></div>})}
+            </div>
+            {detRec.motif_rejet&&<div style={{padding:10,background:T.err+"0a",borderRadius:8,border:"1px solid "+T.err+"25",marginBottom:12}}><div style={{fontSize:9,color:T.err,fontWeight:700}}>MOTIF REJET</div><div style={{fontSize:12,fontWeight:700,color:T.err,marginTop:2}}>{detRec.motif_rejet}</div></div>}
+            {detRec.notes&&<div style={{padding:10,background:T.bg,borderRadius:8,marginBottom:12}}><div style={{fontSize:9,color:T.dim,fontWeight:700}}>NOTES</div><div style={{fontSize:12,whiteSpace:"pre-wrap"}}>{detRec.notes}</div></div>}
+            {!isCli&&<div style={{marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,marginBottom:10,fontFamily:"'Syne',sans-serif"}}>Documents juridiques</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={function(){window.open(API+"/api/documents/mise-en-demeure/"+detRec.id+"?token="+token)}} style={{...bs,padding:"8px 14px",fontSize:11,background:T.err+"15",color:T.err,border:"1px solid "+T.err+"30"}}>Mise en demeure FR+AR</button>
+                <button onClick={function(){window.open(API+"/api/documents/relance/"+detRec.id+"?token="+token)}} style={{...bs,padding:"8px 14px",fontSize:11,background:T.wrn+"15",color:T.wrn,border:"1px solid "+T.wrn+"30"}}>Lettre relance FR+AR</button>
+                <button onClick={function(){window.open(API+"/api/documents/injonction/"+detRec.id+"?token="+token)}} style={{...bs,padding:"8px 14px",fontSize:11,background:T.inf+"15",color:T.inf,border:"1px solid "+T.inf+"30"}}>Injonction de payer</button>
+                <button onClick={function(){window.open(API+"/api/documents/protocole/"+detRec.id+"?token="+token+"&nb=3")}} style={{...bs,padding:"8px 14px",fontSize:11,background:T.ok+"15",color:T.ok,border:"1px solid "+T.ok+"30"}}>Protocole accord (3x)</button>
+                <button onClick={function(){window.open(API+"/api/documents/protocole/"+detRec.id+"?token="+token+"&nb=6")}} style={{...bs,padding:"8px 14px",fontSize:11,background:T.ok+"15",color:T.ok,border:"1px solid "+T.ok+"30"}}>Protocole (6x)</button>
+              </div>
+            </div>}
+            {!isCli&&<div style={{marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><div style={{fontSize:12,fontWeight:700,fontFamily:"'Syne',sans-serif"}}>Analyse IA du dossier</div><button onClick={function(){doAiAnalysis(detRec.id)}} style={{...bs,padding:"6px 14px",fontSize:11,background:"linear-gradient(135deg,"+T.acc+",#A07830)",color:T.bg}}>{aiLoading?"Analyse...":"Analyser"}</button></div>
+              {aiLoading&&<div style={{textAlign:"center",padding:20}}><div style={{width:30,height:30,border:"3px solid "+T.brd,borderTopColor:T.acc,borderRadius:"50%",animation:"spin .8s linear infinite",margin:"0 auto 10px"}}/><div style={{color:T.dim,fontSize:12}}>L IA analyse le dossier...</div></div>}
+              {aiResult&&<div style={{background:T.bg,borderRadius:10,border:"1px solid "+T.brd,padding:14}}>
+                <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+                  <div style={{padding:"6px 12px",borderRadius:8,background:aiResult.risque==="Critique"||aiResult.risque==="Eleve"?T.err+"15":aiResult.risque==="Moyen"?T.wrn+"15":T.ok+"15",color:aiResult.risque==="Critique"||aiResult.risque==="Eleve"?T.err:aiResult.risque==="Moyen"?T.wrn:T.ok,fontSize:12,fontWeight:700}}>Risque: {aiResult.risque} ({aiResult.score_risque}/100)</div>
+                  <div style={{padding:"6px 12px",borderRadius:8,background:T.inf+"15",color:T.inf,fontSize:12,fontWeight:700}}>Recouvrement: {aiResult.probabilite_recouvrement}</div>
+                  {aiResult.estimation_delai&&<div style={{padding:"6px 12px",borderRadius:8,background:T.acc+"15",color:T.acc,fontSize:12,fontWeight:700}}>{aiResult.estimation_delai}</div>}
+                </div>
+                <div style={{marginBottom:8}}><div style={{fontSize:10,color:T.dim,fontWeight:700,marginBottom:3}}>STRATEGIE</div><div style={{fontSize:12,lineHeight:1.5}}>{aiResult.strategie_recommandee}</div></div>
+                {aiResult.actions_prioritaires&&<div style={{marginBottom:8}}><div style={{fontSize:10,color:T.dim,fontWeight:700,marginBottom:3}}>ACTIONS PRIORITAIRES</div>{aiResult.actions_prioritaires.map(function(a,i){return <div key={i} style={{padding:"6px 8px",background:T.card,borderRadius:6,marginBottom:3,fontSize:11,borderLeft:"3px solid "+T.acc}}><b style={{color:T.acc}}>{a.numero||i+1}.</b> {a.action} <span style={{color:T.dim}}>({a.delai})</span></div>})}</div>}
+                {aiResult.analyse_juridique&&<div style={{marginBottom:8}}><div style={{fontSize:10,color:T.dim,fontWeight:700,marginBottom:3}}>ANALYSE JURIDIQUE</div><div style={{fontSize:11,lineHeight:1.5,color:T.mut}}>{aiResult.analyse_juridique}</div></div>}
+                {aiResult.conseil_personnalise&&<div style={{padding:8,background:T.acc+"10",borderRadius:6,border:"1px solid "+T.acc+"25"}}><div style={{fontSize:10,color:T.acc,fontWeight:700,marginBottom:3}}>CONSEIL</div><div style={{fontSize:12,lineHeight:1.5}}>{aiResult.conseil_personnalise}</div></div>}
+              </div>}
+            </div>}
+            <div><div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Historique</div>
+              {detActs.length===0?<div style={{color:T.dim,fontSize:11}}>Aucune action</div>:detActs.slice(0,15).map(function(a){return <div key={a.id} style={{padding:"7px 10px",borderLeft:"3px solid "+T.acc,marginBottom:4,background:T.bg,borderRadius:"0 6px 6px 0",fontSize:11}}><div style={{display:"flex",justifyContent:"space-between"}}><span><b style={{color:T.acc}}>{a.user_name}</b> — {a.action}</span><span style={{color:T.dim,fontSize:10}}>{fDT(a.created_at)}</span></div>{a.details&&<div style={{color:T.mut,marginTop:1}}>{a.details}</div>}</div>})}
+            </div>
+          </div>
+        </div>}
+
+        {/* FIX: Formulaire utilise snake_case directement comme la DB */}
+        {view==="form"&&eRec&&!isCli&&<div>
+          <h1 style={{fontSize:22,fontWeight:800,margin:"0 0 16px",fontFamily:"'Syne',sans-serif"}}>{eRec.id?"Modifier":"Nouveau dossier"}</h1>
+          <div style={{background:T.card,borderRadius:14,border:"1px solid "+T.brd,padding:24}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))",gap:12}}>
+              <div><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>TYPE</label><select value={eRec.type||"Chèque"} onChange={function(e){setERec(Object.assign({},eRec,{type:e.target.value}))}} style={iS}>{TYPES.map(function(t){return <option key={t}>{t}</option>})}</select></div>
+              <div><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>PRIORITÉ</label><select value={eRec.priorite||"Normale"} onChange={function(e){setERec(Object.assign({},eRec,{priorite:e.target.value}))}} style={iS}>{PRIORITES.map(function(p){return <option key={p}>{p}</option>})}</select></div>
+              <div><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>STATUT</label><select value={eRec.statut||"Nouveau"} onChange={function(e){setERec(Object.assign({},eRec,{statut:e.target.value}))}} style={iS}>{STATUTS.map(function(s){return <option key={s}>{s}</option>})}</select></div>
+              {isMgr&&<div><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>AGENT</label><select value={eRec.assigned_to||""} onChange={function(e){setERec(Object.assign({},eRec,{assigned_to:e.target.value}))}} style={iS}><option value="">—</option>{agentUsers.filter(function(u){return u.active}).map(function(u){return <option key={u.id} value={u.id}>{u.nom}</option>})}</select></div>}
+              <div style={{gridColumn:"1/-1",padding:"8px 12px",background:T.acc+"12",borderRadius:8,fontWeight:700,fontSize:11,color:T.acc}}>● DÉBITEUR (titulaire du compte)</div>
+              {[{k:"nom_debiteur",l:"NOM *"},{k:"cin_debiteur",l:"CIN"},{k:"rc_debiteur",l:"RC"},{k:"tel_debiteur",l:"TÉL"},{k:"email_debiteur",l:"EMAIL"},{k:"ville",l:"VILLE"}].map(function(f){return <div key={f.k}><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>{f.l}</label><input value={eRec[f.k]||""} onChange={function(e){var o={};o[f.k]=e.target.value;setERec(Object.assign({},eRec,o))}} style={iS}/></div>})}
+              <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>ADRESSE</label><input value={eRec.adresse_debiteur||""} onChange={function(e){setERec(Object.assign({},eRec,{adresse_debiteur:e.target.value}))}} style={iS}/></div>
+              <div style={{gridColumn:"1/-1",padding:"8px 12px",background:T.bg,borderRadius:8,fontWeight:700,fontSize:11,color:T.mut}}>● DOCUMENT</div>
+              {[{k:"num_document",l:"N° DOC *"},{k:"num_compte",l:"N° COMPTE"},{k:"banque",l:"BANQUE"},{k:"agence_bancaire",l:"AGENCE"},{k:"montant",l:"MONTANT *",t:"number"},{k:"date_echeance",l:"ÉCHÉANCE",t:"date"},{k:"date_reception",l:"RÉCEPTION",t:"date"}].map(function(f){return <div key={f.k}><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>{f.l}</label><input type={f.t||"text"} value={eRec[f.k]||""} onChange={function(e){var o={};o[f.k]=e.target.value;setERec(Object.assign({},eRec,o))}} style={iS}/></div>})}
+              <div><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>MOTIF REJET</label><select value={eRec.motif_rejet||""} onChange={function(e){setERec(Object.assign({},eRec,{motif_rejet:e.target.value}))}} style={iS}><option value="">—</option>{MOTIFS.map(function(m){return <option key={m}>{m}</option>})}</select></div>
+              <div style={{gridColumn:"1/-1",padding:"8px 12px",background:T.wrn+"12",borderRadius:8,fontWeight:700,fontSize:11,color:T.wrn}}>● CLIENT MANDANT (saisie manuelle)</div>
+              <div><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>CLIENT</label><input value={eRec.nom_client||""} onChange={function(e){setERec(Object.assign({},eRec,{nom_client:e.target.value}))}} style={iS}/></div>
+              <div><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>RÉF</label><input value={eRec.ref_client||""} onChange={function(e){setERec(Object.assign({},eRec,{ref_client:e.target.value}))}} style={iS}/></div>
+              <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>NOTES</label><textarea rows={2} value={eRec.notes||""} onChange={function(e){setERec(Object.assign({},eRec,{notes:e.target.value}))}} style={{...iS,resize:"vertical"}}/></div>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:18,justifyContent:"flex-end"}}><button onClick={function(){setERec(null);setView("dossiers")}} style={{...bs,background:T.hov}}>Annuler</button><button onClick={function(){saveRec(eRec)}} style={bs}>{eRec.id?"Enregistrer":"Créer"}</button></div>
+          </div>
+        </div>}
+
+        {view==="clients"&&isMgr&&!eUsr&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h1 style={{fontSize:22,fontWeight:800,margin:0,fontFamily:"'Syne',sans-serif"}}>Clients</h1><button onClick={function(){setEUsr({id:"",username:"",password:"",role:"client",nom:"",active:true})}} style={bs}>＋ Client</button></div>
+          {uniqueClients.length>0&&<div style={{background:T.card,borderRadius:14,border:"1px solid "+T.brd,overflow:"hidden"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr>{["Client","Dossiers","Montant","Recouvré","Taux",""].map(function(h){return <th key={h} style={{padding:"10px 12px",textAlign:"left",fontWeight:700,color:T.dim,fontSize:10,borderBottom:"1px solid "+T.brd}}>{h}</th>})}</tr></thead>
+            <tbody>{uniqueClients.sort(function(a,b){return b.mt2-a.mt2}).map(function(c,i){return <tr key={i}><td style={{padding:"10px 12px",fontWeight:600}}>{c.nom}</td><td style={{padding:"10px 12px"}}>{c.cnt}</td><td style={{padding:"10px 12px",fontFamily:"'JetBrains Mono',monospace"}}>{fM(c.mt2)}</td><td style={{padding:"10px 12px",color:T.ok}}>{fM(c.mp)}</td><td style={{padding:"10px 12px",fontWeight:700}}>{c.mt2>0?Math.round(c.mp/c.mt2*100):0}%</td><td><button onClick={function(){setCView(c.nom);setView("dossiers")}} style={{...bs,padding:"3px 10px",fontSize:10,background:T.hov}}>Voir</button></td></tr>})}</tbody>
+          </table></div>}
+        </div>}
+
+        {view==="agents"&&isMgr&&!eUsr&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h1 style={{fontSize:22,fontWeight:800,margin:0,fontFamily:"'Syne',sans-serif"}}>Équipe</h1><button onClick={function(){setEUsr({id:"",username:"",password:"",role:"agent",nom:"",active:true})}} style={bs}>＋ Agent</button></div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:10}}>{agentUsers.map(function(u){var as2=recs.filter(function(r){return r.assigned_to===u.id});var mT2=as2.reduce(function(s,r){return s+(Number(r.montant)||0)},0);var mR2=as2.filter(function(r){return r.statut==="Payé"}).reduce(function(s,r){return s+(Number(r.montant)||0)},0);return <div key={u.id} style={{background:T.card,borderRadius:12,border:"1px solid "+T.brd,padding:16,opacity:u.active?1:.5}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><div><div style={{fontWeight:700}}>{u.nom}</div><div style={{fontSize:10,color:T.dim}}>@{u.username}</div></div><button onClick={function(){setEUsr(Object.assign({},u))}} style={{...bs,padding:"3px 8px",fontSize:10,background:T.hov}}>✎</button></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:10}}><div style={{background:T.bg,padding:7,borderRadius:6,textAlign:"center"}}><div style={{fontWeight:800,fontSize:15}}>{as2.length}</div>Dossiers</div><div style={{background:T.bg,padding:7,borderRadius:6,textAlign:"center"}}><div style={{fontWeight:800,fontSize:15,color:T.ok}}>{mT2>0?Math.round(mR2/mT2*100):0}%</div>Taux</div></div></div>})}</div>
+          {/* FIX: Bouton modifier MDP manager */}
+          {mgrUser&&<div style={{marginTop:20,padding:14,background:T.card,borderRadius:12,border:"1px solid "+T.brd}}><div style={{fontWeight:700,marginBottom:8,fontSize:13}}>⚙ Compte Manager</div><div style={{fontSize:11,color:T.dim,marginBottom:8}}>@{mgrUser.username}</div><button onClick={function(){setEUsr(Object.assign({},mgrUser))}} style={{...bs,padding:"6px 14px",fontSize:11,background:T.hov}}>Modifier mot de passe</button></div>}
+        </div>}
+
+        {(view==="agents"||view==="clients")&&isMgr&&eUsr&&<div>
+          <button onClick={function(){setEUsr(null)}} style={{...bs,background:T.hov,marginBottom:14,padding:"5px 12px",fontSize:11}}>← Retour</button>
+          <div style={{background:T.card,borderRadius:14,border:"1px solid "+T.brd,padding:24,maxWidth:400}}>
+            <h2 style={{fontFamily:"'Syne',sans-serif",margin:"0 0 16px",fontSize:18}}>{eUsr.id?"Modifier":"Nouveau "+eUsr.role}</h2>
+            {["nom","username","password"].map(function(k){return <div key={k} style={{marginBottom:12}}><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>{k==="nom"?"NOM":k==="username"?"IDENTIFIANT":"MOT DE PASSE"}</label><input type={k==="password"?"text":"text"} value={eUsr[k]||""} onChange={function(e){var o={};o[k]=e.target.value;setEUsr(Object.assign({},eUsr,o))}} style={iS}/></div>})}
+            <div style={{display:"flex",gap:8}}><button onClick={function(){setEUsr(null)}} style={{...bs,background:T.hov}}>Annuler</button><button onClick={function(){if(!eUsr.nom||!eUsr.username||!eUsr.password){noti("Champs requis","w");return}saveUsr(eUsr)}} style={bs}>OK</button></div>
+          </div>
+        </div>}
+
+        {view==="history"&&<div>
+          <h1 style={{fontSize:22,fontWeight:800,margin:"0 0 16px",fontFamily:"'Syne',sans-serif"}}>Historique</h1>
+          <div style={{background:T.card,borderRadius:14,border:"1px solid "+T.brd,padding:16}}>{acts.length===0?<div style={{color:T.dim,textAlign:"center",padding:20}}>Aucune action</div>:acts.slice(0,60).map(function(a){return <div key={a.id} style={{padding:"7px 10px",borderLeft:"3px solid "+T.acc,marginBottom:4,background:T.bg,borderRadius:"0 6px 6px 0",fontSize:11}}><div style={{display:"flex",justifyContent:"space-between"}}><span><b style={{color:T.acc}}>{a.user_name}</b> — {a.action}</span><span style={{color:T.dim,fontSize:10}}>{fDT(a.created_at)}</span></div>{a.details&&<div style={{color:T.mut,marginTop:1}}>{a.details}</div>}</div>})}</div>
+        </div>}
+      </main>
+
+      <ScanBox show={showScan} onClose={function(){setShowScan(false)}} onDone={handleScanDone} token={token}/>
+
+      <Modal show={showRel} onClose={function(){setShowRel(false)}} title={"📞 Relance — "+(relT?relT.nom_debiteur:"")}>
+        <div style={{marginBottom:12}}><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>ACTION</label><select value={rf.action} onChange={function(e){setRf({action:e.target.value,details:rf.details})}} style={iS}><option value="">—</option>{ACTIONS.map(function(a){return <option key={a}>{a}</option>})}</select></div>
+        <div style={{marginBottom:14}}><label style={{fontSize:10,fontWeight:700,color:T.dim,display:"block",marginBottom:3}}>DÉTAILS</label><textarea rows={2} value={rf.details} onChange={function(e){setRf({action:rf.action,details:e.target.value})}} style={{...iS,resize:"vertical"}}/></div>
+        <div style={{display:"flex",gap:8}}><button onClick={function(){setShowRel(false)}} style={{...bs,flex:1,background:T.hov}}>Annuler</button><button onClick={doRel} style={{...bs,flex:1}}>OK</button></div>
+      </Modal>
+
+      <style>{"@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}*{box-sizing:border-box}input:focus,select:focus,textarea:focus{border-color:"+T.acc+"!important;box-shadow:0 0 0 3px "+T.acc+"20}button:hover{opacity:.88}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:"+T.brd+";border-radius:3px}select{appearance:none}select option{background:"+T.card+";color:"+T.txt+"}"}</style>
+    </div>
+  );
+}
