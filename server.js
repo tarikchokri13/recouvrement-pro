@@ -47,6 +47,9 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_pai_record ON paiements(record_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_rel_record ON relances(record_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_ech_record ON echeanciers(record_id)");
 
+// Table messages SMS/WhatsApp
+db.exec("CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,record_id TEXT REFERENCES records(id),type TEXT CHECK(type IN('sms','whatsapp')),to_number TEXT NOT NULL,message TEXT NOT NULL,status TEXT DEFAULT 'sent',provider_id TEXT,created_by TEXT,created_at TEXT DEFAULT(datetime('now')))");
+
 // SECURITE: Hash des mots de passe
 function hashPwd(pwd){var salt=crypto.randomBytes(16).toString('hex');var hash=crypto.pbkdf2Sync(pwd,salt,10000,64,'sha512').toString('hex');return salt+':'+hash;}
 function verifyPwd(pwd,stored){var parts=stored.split(':');if(parts.length!==2)return pwd===stored;var hash=crypto.pbkdf2Sync(pwd,parts[0],10000,64,'sha512').toString('hex');return hash===parts[1];}
@@ -156,6 +159,50 @@ app.get('/api/stats/prescriptions',auth,function(req,res){
   var soon=db.prepare("SELECT * FROM records WHERE date_prescription IS NOT NULL AND date_prescription!='' AND date_prescription<=date('now','+30 days') AND statut NOT IN('Payé','Impayé définitif','Prescrit') ORDER BY date_prescription ASC").all();
   res.json(soon);
 });
+
+// ══ MESSAGING SMS/WHATSAPP ══
+// Configurer via env: SMS_API_KEY, SMS_API_URL, SMS_SENDER
+// Compatible avec: InfoBip, Twilio, MessageBird ou tout provider SMS REST
+var SMS_KEY=process.env.SMS_API_KEY||'';
+var SMS_URL=process.env.SMS_API_URL||'';
+var SMS_SENDER=process.env.SMS_SENDER||'RecouvrementPro';
+var WA_API_URL=process.env.WA_API_URL||'';
+var WA_TOKEN=process.env.WA_TOKEN||'';
+
+app.post('/api/messaging/send',auth,function(req,res){
+  var b=req.body;
+  var errs=validate(b,{to:{required:true,maxLen:20},message:{required:true,maxLen:1600},type:{required:true,enum:['sms','whatsapp']}});
+  if(errs.length)return res.status(400).json({error:errs.join(', ')});
+  var id='MSG'+gid();
+  // Enregistrer le message dans la base
+  try{
+    db.prepare("INSERT INTO messages(id,record_id,type,to_number,message,status,created_by)VALUES(?,?,?,?,?,?,?)").run(id,b.record_id||null,b.type,b.to,b.message,'pending',req.user.id);
+    if(b.record_id){
+      db.prepare("INSERT INTO activities(id,user_id,user_name,action,record_id,details)VALUES(?,?,?,?,?,?)").run('A'+gid(),req.user.id,req.user.nom,b.type==='whatsapp'?'WhatsApp':'SMS',b.record_id,'Envoi '+b.type+' a '+b.to);
+      // Enregistrer aussi comme relance
+      db.prepare("INSERT INTO relances(id,record_id,type_relance,canal,notes,created_by)VALUES(?,?,?,?,?,?)").run('R'+gid(),b.record_id,'Relance '+b.type.toUpperCase(),b.type,b.message.substring(0,200),req.user.id);
+      db.prepare("UPDATE records SET date_derniere_relance=?,nb_relances=COALESCE(nb_relances,0)+1,updated_at=? WHERE id=?").run(new Date().toISOString(),new Date().toISOString(),b.record_id);
+    }
+  }catch(e){return res.status(500).json({error:e.message});}
+
+  // Envoyer via API externe si configuree
+  if(b.type==='sms'&&SMS_KEY&&SMS_URL){
+    fetch(SMS_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SMS_KEY},body:JSON.stringify({from:SMS_SENDER,to:b.to,text:b.message})})
+    .then(function(r){return r.json()})
+    .then(function(d){db.prepare("UPDATE messages SET status='sent',provider_id=? WHERE id=?").run(d.messageId||d.id||'ok',id);res.json({success:true,id:id,status:'sent'});})
+    .catch(function(e){db.prepare("UPDATE messages SET status='failed' WHERE id=?").run(id);res.json({success:true,id:id,status:'logged',note:'SMS API indisponible, message enregistre'});});
+  }else if(b.type==='whatsapp'&&WA_TOKEN&&WA_API_URL){
+    fetch(WA_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+WA_TOKEN},body:JSON.stringify({messaging_product:'whatsapp',to:b.to,type:'text',text:{body:b.message}})})
+    .then(function(r){return r.json()})
+    .then(function(d){db.prepare("UPDATE messages SET status='sent',provider_id=? WHERE id=?").run(d.messages?d.messages[0].id:'ok',id);res.json({success:true,id:id,status:'sent'});})
+    .catch(function(e){db.prepare("UPDATE messages SET status='logged' WHERE id=?").run(id);res.json({success:true,id:id,status:'logged',note:'WhatsApp API indisponible'});});
+  }else{
+    // Pas d API configuree → on enregistre quand meme + fallback WhatsApp web
+    db.prepare("UPDATE messages SET status='logged' WHERE id=?").run(id);
+    res.json({success:true,id:id,status:'logged',note:'API non configuree. Message enregistre. Pour WhatsApp, utiliser le lien direct.'});
+  }
+});
+app.get('/api/messaging/history/:recordId',auth,function(req,res){res.json(db.prepare("SELECT * FROM messages WHERE record_id=? ORDER BY created_at DESC").all(req.params.recordId));});
 
 // ══ SCAN OCR ══
 app.post('/api/scan',auth,function(req,res){if(!AKEY)return res.status(500).json({success:false,error:'Cle API non configuree'});fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':AKEY,'anthropic-version':'2023-06-01'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:req.body.mediaType||'image/jpeg',data:req.body.image}},{type:'text',text:req.body.prompt}]}]})}).then(function(r){return r.json()}).then(function(data){if(data.error)return res.status(500).json({success:false,error:data.error.message});var text='';for(var i=0;i<data.content.length;i++)text+=data.content[i].text||'';res.json({success:true,text:text});}).catch(function(e){res.status(500).json({success:false,error:e.message});});});
@@ -307,13 +354,16 @@ if(fs.existsSync(path.join(__dirname,'build'))){app.use(express.static(path.join
 app.listen(PORT,'0.0.0.0',function(){
   console.log('');
   console.log('  ==========================================');
-  console.log('  RECOUVREMENT PRO v2 - Serveur Securise');
+  console.log('  RECOUVREMENT PRO v3 - Serveur Securise');
   console.log('  ==========================================');
   console.log('  URL:      http://localhost:'+PORT);
   console.log('  Base:     '+path.join(DDIR,'recouvrement.db'));
   console.log('  OCR/IA:   '+(AKEY?'Actif':'Inactif'));
+  console.log('  SMS:      '+(SMS_KEY?'Actif':'Non configure'));
+  console.log('  WhatsApp: '+(WA_TOKEN?'Actif':'Non configure (fallback web)'));
   console.log('  Securite: Mots de passe hashes + JWT env');
-  console.log('  Modules:  Paiements, Prescription, Balance agee');
+  console.log('  Modules:  Paiements, Prescription, Balance,');
+  console.log('            Graphiques, i18n FR/AR, SMS/WhatsApp');
   console.log('  ==========================================');
   console.log('');
   backup();
