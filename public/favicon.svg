@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#D4A843"/>
+      <stop offset="100%" stop-color="#9A7520"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.3"/>
+      <stop offset="40%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="96" fill="url(#shine)"/>
+  <!-- Subtle border -->
+  <rect x="4" y="4" width="504" height="504" rx="92" fill="none" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="4"/>
+  <!-- R letter -->
+  <path d="M100 100h100c52 0 86 32 86 80 0 42-24 68-60 78L290 400h-54L180 262h-30v138h-50V100zm50 40v82h50c28 0 42-18 42-42s-14-40-42-40H150z" 
+        fill="#0C0F1A" fill-opacity="0.85" filter="url(#shadow)"/>
+  <!-- P letter -->
+  <path d="M300 100h52c48 0 80 30 80 80s-32 80-80 80H350v140h-50V100zm50 40v80h8c24 0 36-15 36-40s-12-40-36-40H350z" 
+        fill="#0C0F1A" fill-opacity="0.85" filter="url(#shadow)"/>
+  <!-- Decorative line -->
+  <rect x="90" y="430" width="332" height="6" rx="3" fill="#0C0F1A" fill-opacity="0.3"/>
+</svg>

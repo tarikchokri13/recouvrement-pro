@@ -1,21 +1,31 @@
 {
-  "short_name": "Recouvrement Pro",
+  "short_name": "RP",
   "name": "Recouvrement Pro - Gestion des Créances",
+  "description": "Application de gestion des créances impayées - Chèques, LCN, Factures",
   "icons": [
     {
-      "src": "logo192.png",
-      "type": "image/png",
-      "sizes": "192x192"
+      "src": "favicon.ico",
+      "sizes": "16x16 32x32 48x48",
+      "type": "image/x-icon"
     },
     {
-      "src": "logo512.png",
+      "src": "icon-192x192.png",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512x512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
     }
   ],
   "start_url": ".",
   "display": "standalone",
-  "theme_color": "#0C0F1A",
+  "theme_color": "#D4A843",
   "background_color": "#0C0F1A",
-  "orientation": "any"
+  "lang": "fr",
+  "dir": "auto",
+  "categories": ["business", "finance"]
 }
